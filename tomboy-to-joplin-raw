@@ -74,12 +74,6 @@ def nodeMarkdown(tbNode,listlevel):
 def write_datum(f,t,v):
     f.write("\n%s: %s" % (t,v))
 
-def matchstart(s,start):
-    if s.startswith(start):
-        return s[len(start):]
-    else:
-        return None
-
 def scannote(noteid,srcpath):
     global categories, notelinks
     tbRoot = lxml.etree.parse(srcpath).getroot()
