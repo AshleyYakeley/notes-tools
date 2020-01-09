@@ -1,0 +1,178 @@
+#!/usr/bin/python3
+import sys, os, fnmatch, datetime, isodate, lxml.etree, xdg.BaseDirectory
+
+categories = {}
+notelinks = {}
+
+def textMarkdown(t):
+    for c in ['\\','*','+','`','_','#','[',']']:
+        t = t.replace(c,"\\" + c)
+    t = t.replace("\n", "  \n").replace("  \n  \n", "\n\n")
+    return t
+
+def nodeMarkdown(tbNode,listlevel):
+    global categories, notelinks
+    tbType = tbNode.tag
+    if tbType == "{http://beatniksoftware.com/tomboy}list":
+        listlevel += 1
+    text = tbNode.text or ""
+    migrated = ""
+    if tbType == "{http://beatniksoftware.com/tomboy}note-content":
+        pass
+    elif tbType == "{http://beatniksoftware.com/tomboy}list":
+        pass
+    elif tbType == "{http://beatniksoftware.com/tomboy}list-item":
+        pass
+    else:
+        while text.endswith("\n"):
+            text = text[:-1]
+            migrated = "\n" + migrated
+    md = textMarkdown(text)
+    for tbSub in tbNode:
+        md += nodeMarkdown(tbSub,listlevel)
+    if md == "":
+        pass
+    else:
+        if tbType == "{http://beatniksoftware.com/tomboy}note-content":
+            pass
+        elif tbType == "{http://beatniksoftware.com/tomboy}italic":
+            md = "*" + md + "*"
+        elif tbType == "{http://beatniksoftware.com/tomboy}bold":
+            md = "**" + md + "**"
+        elif tbType == "{http://beatniksoftware.com/tomboy}highlight":
+            md = "==" + md + "=="
+        elif tbType == "{http://beatniksoftware.com/tomboy}underline":
+            md = "++" + md + "++"
+        elif tbType == "{http://beatniksoftware.com/tomboy}strikethrough":
+            md = "<s>" + md + "</s>"
+        elif tbType == "{http://beatniksoftware.com/tomboy}monospace":
+            md = "`" + md + "`"
+        elif tbType == "{http://beatniksoftware.com/tomboy/size}large":
+            md = "<big>" + md + "</big>"
+        elif tbType == "{http://beatniksoftware.com/tomboy/size}huge":
+            md = "<big><big>" + md + "</big></big>"
+        elif tbType == "{http://beatniksoftware.com/tomboy/size}small":
+            md = "<small>" + md + "</small>"
+        elif tbType == "{http://beatniksoftware.com/tomboy}list":
+            pass
+        elif tbType == "{http://beatniksoftware.com/tomboy}list-item":
+            md = ("    " * (listlevel - 1)) + "- " + md
+        elif tbType == "{http://beatniksoftware.com/tomboy/link}url":
+            md = "[" + md + "](" + md + ")"
+        elif tbType == "{http://beatniksoftware.com/tomboy/link}internal":
+            link = notelinks.get(md)
+            if link is not None:
+                md = "[" + md + "](:/" + link + ")"
+        elif tbType == "{http://beatniksoftware.com/tomboy/link}broken":
+            link = notelinks.get(md)
+            if link is not None:
+                md = "[" + md + "](:/" + link + ")"
+        else:
+            print("Unknown Tomboy element type: " + tbType, file=sys.stderr)
+    return md + textMarkdown(migrated + (tbNode.tail or ""))
+
+def write_datum(f,t,v):
+    f.write("\n%s: %s" % (t,v))
+
+def matchstart(s,start):
+    if s.startswith(start):
+        return s[len(start):]
+    else:
+        return None
+
+def scannote(noteid,srcpath):
+    global categories, notelinks
+    tbRoot = lxml.etree.parse(srcpath).getroot()
+    tbTitle = tbRoot.find("{http://beatniksoftware.com/tomboy}title").text
+    tbCategory = None
+    tbTags = tbRoot.find("{http://beatniksoftware.com/tomboy}tags")
+    tbIsTemplate = False
+    if tbTags is not None:
+        for tagNode in tbTags:
+            tag = tagNode.text
+            if tag.startswith("system:notebook:"):
+                tbCategory = tag.replace("system:notebook:", "")
+            elif tag == "system:template":
+                tbIsTemplate = True
+    if tbIsTemplate:
+        if tbCategory is not None:
+            categories[tbCategory] = noteid
+    else:
+        notelinks[tbTitle] = noteid
+
+def noteContent(tbContent):
+    return nodeMarkdown(tbContent,0).replace("\n","\n\n",1)
+
+def convertnote(noteid,srcpath,destpath):
+    global categories, notelinks
+    tbRoot = lxml.etree.parse(srcpath).getroot()
+    tbTitle = tbRoot.find("{http://beatniksoftware.com/tomboy}title").text
+    tbContent = tbRoot.find("{http://beatniksoftware.com/tomboy}text").find("{http://beatniksoftware.com/tomboy}note-content")
+    tbCreated = isodate.parse_datetime(tbRoot.find("{http://beatniksoftware.com/tomboy}create-date").text)
+    tbUpdated = isodate.parse_datetime(tbRoot.find("{http://beatniksoftware.com/tomboy}last-change-date").text)
+    tbCategory = None
+    tbTags = tbRoot.find("{http://beatniksoftware.com/tomboy}tags")
+    tbIsTemplate = False
+    if tbTags is not None:
+        for tagNode in tbTags:
+            tag = tagNode.text
+            if tag.startswith("system:notebook:"):
+                tbCategory = tag.replace("system:notebook:", "")
+            elif tag == "system:template":
+                tbIsTemplate = True
+            else:
+                print("Unexpected tag in %s: \"%s\"" % (noteid,tag), file=sys.stderr)
+    catid = None
+    if tbCategory is not None:
+        catid = categories.get(tbCategory)
+        if catid is None:
+            print("Missing Tomboy template for %s" % tbCategory, file=sys.stderr)
+    if tbIsTemplate:
+        if tbCategory is None:
+            return
+        if catid != noteid:
+            print("Duplicate Tomboy templates for %s" % tbCategory, file=sys.stderr)
+            return
+    with open(destpath, 'w') as f:
+        if tbIsTemplate:
+            f.write(tbCategory)
+            f.write("\n")
+            write_datum(f,"id",noteid)
+            write_datum(f,"created_time",tbCreated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"updated_time",tbUpdated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"user_created_time",tbCreated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"user_updated_time",tbUpdated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"type_","2")
+        else:
+            f.write(noteContent(tbContent))
+            f.write("\n")
+            write_datum(f,"id",noteid)
+            if catid is not None:
+                write_datum(f,"parent_id",catid)
+            write_datum(f,"source","tomboy")
+            write_datum(f,"created_time",tbCreated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"updated_time",tbUpdated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"user_created_time",tbCreated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"user_updated_time",tbUpdated.astimezone(datetime.timezone.utc).strftime ("%Y-%m-%dT%H:%M:%SZ"))
+            write_datum(f,"markup_language","1")
+            write_datum(f,"type_","1")
+
+srcdir = os.path.join(xdg.BaseDirectory.xdg_data_home, "tomboy")
+destdir = "Joplin-RAW"
+if not os.path.exists(destdir):
+    os.makedirs(destdir)
+
+# first pass: collect links and categories
+for srcname in fnmatch.filter(os.listdir(srcdir), "*.note"):
+    (nbase,_) = os.path.splitext(srcname)
+    noteid = nbase.replace("-","")
+    srcpath = os.path.join(srcdir, srcname)
+    scannote(noteid,srcpath)
+
+# second pass: write notes
+for srcname in fnmatch.filter(os.listdir(srcdir), "*.note"):
+    (nbase,_) = os.path.splitext(srcname)
+    noteid = nbase.replace("-","")
+    srcpath = os.path.join(srcdir, srcname)
+    destpath = os.path.join(destdir, noteid+".md")
+    convertnote(noteid,srcpath,destpath)
